@@ -295,6 +295,7 @@ int8_t DS18B20_init(DS18B20 *devices, DS18B20_BSP_FPTRS *fptrs, uint8_t max_devi
 		else	// Bus message error, loop again TODO: add retry/error cnt
 		{
 			devices->enumerated = 0;
+			return dev_cnt;
 		}
 	}
 	return dev_cnt;
