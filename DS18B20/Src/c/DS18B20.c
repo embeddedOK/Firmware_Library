@@ -6,17 +6,27 @@
  */
 #include <stdint.h>
 #include <stddef.h>
+//Include CMSIS for _RBIT()
+#include <cmsis_gcc.h>
 
 #include "DS18B20_REG.h"
 #include "DS18B20.h"
 
-// DS18B20 converson time lookup table
+// DS18B20 conversion time lookup table
 const uint32_t DS18B20_CONVERSION_TIME_MS[] =
 {
 		DS18B20_CONFIG_9BITS_TCONV_MS,
 		DS18B20_CONFIG_10BITS_TCONV_MS,
 		DS18B20_CONFIG_11BITS_TCONV_MS,
 		DS18B20_CONFIG_12BITS_TCONV_MS
+};
+// DS18B20 temperature bitmask lookup table
+const uint32_t DS18B20_TEMPERATURE_RESOLUTION_BITMASK[] =
+{
+		DS18B20_CONFIG_9BITS_BITMASK,
+		DS18B20_CONFIG_10BITS_BITMASK,
+		DS18B20_CONFIG_11BITS_BITMASK,
+		DS18B20_CONFIG_12BITS_BITMASK
 };
 
 int8_t DS18B20_resetPulse(DS18B20 *device)
@@ -184,6 +194,9 @@ uint8_t DS18B20_convertTemperature(DS18B20 *device, uint8_t wait_for_complete)
 int8_t DS18B20_getScratchPad(DS18B20 * device)
 {
 	int8_t ret = DS18B20_matchROM(device);
+	uint8_t crc_calc = 0;
+	uint8_t crc_value = 0;
+
 	if(ret != DS18B20_OK)
 	{
 		return ret;
@@ -195,21 +208,31 @@ int8_t DS18B20_getScratchPad(DS18B20 * device)
 		device->scratchpad[x] = 0;
 		for(int y=0; y<8; y++)
 		{
-			device->scratchpad[x] <<=1;
-			device->scratchpad[x] |= DS18B20_readBusBit(device);
+			device->scratchpad[x] |= DS18B20_readBusBit(device)<<y;
 		}
 	}
+	crc_value = (uint8_t)(__RBIT(device->scratchpad[DS18B20_SCRATCHPAD_CRC])>>24);
+	crc_calc = DS18B20_wire1_calcCRC_LSB((uint8_t *)device->scratchpad, DS18B20_SCRATCHPAD_DATA_BYTE_SIZE);
+	if(crc_calc == crc_value)
+	{
+		//Valid Scratch Pad Data, grab the data
+		device->resolution = (uint8_t)(__RBIT(device->scratchpad[DS18B20_SCRATCHPAD_CONFIG_REG])>>24);
+		device->resolution = ((device->resolution>>DS18B20_CONFIG_REG_OFFSET) & DS18B20_CONFIG_REG_MASK);
 
-	device->temperature = 0;
-	for(int x=(DS18B20_TEMPERATURE_BIT_SIZE/8); x>0; x--)
-	{
-			device->temperature <<=8;
-			device->temperature |= device->scratchpad[x-1];
+		//Temperature Raw
+		device->temperature_raw = device->scratchpad[DS18B20_SCRATCHPAD_TEMPMSB]<<8 | device->scratchpad[DS18B20_SCRATCHPAD_TEMPLSB];
+		device->temperature_raw = (uint16_t)(__RBIT(device->temperature_raw)>>16);	//Swap Bits
+		device->temperature_raw &= DS18B20_TEMPERATURE_RESOLUTION_BITMASK[device->resolution];
+
+		//Alert High and Low Temperatures
+		device->th = (int8_t)(__RBIT(device->scratchpad[DS18B20_SCRATCHPAD_TH])>>24);
+		device->tl = (int8_t)(__RBIT(device->scratchpad[DS18B20_SCRATCHPAD_TL])>>24);
 	}
-	for(int x=0; x<DS18B20_TEMPERATURE_BIT_SIZE; x++)
+	else
 	{
-		//TODO: Convert to temp here?
+		return -DS18B20_BAD_CRC;
 	}
+
 	return DS18B20_OK;
 }
 int8_t DS18B20_getTemperature(DS18B20 *device, int16_t *value)
@@ -221,7 +244,6 @@ int8_t DS18B20_getTemperature(DS18B20 *device, int16_t *value)
 // Enumerate up to max_devices DS18B20 devices utilizing the SEARCH ROM Command and populate the DS18B20 structure
 int8_t DS18B20_init(DS18B20 *devices, DS18B20_BSP_FPTRS *fptrs, uint8_t max_devices)
 {
-	uint64_t rom_code = 0;
 	uint64_t address = 0;
 	uint64_t address_contention = 0;
 	uint8_t  crc_value = 0;
@@ -239,24 +261,25 @@ int8_t DS18B20_init(DS18B20 *devices, DS18B20_BSP_FPTRS *fptrs, uint8_t max_devi
 
 	while(dev_cnt < max_devices)
 	{
-		devices->delayUS 		= fptrs->delayUS;
-	    devices->wire1_setZero 	= fptrs->wire1_setZero;
-		devices->wire1_setOne 	= fptrs->wire1_setOne;
-		devices->wire1_read   	= fptrs->wire1_read;
-		devices->enumerated     = 1;	//Fptrs set, set enumerated to allow resetPulse check
-		reading = DS18B20_resetPulse(devices);
+		devices[dev_cnt].delayUS 		= fptrs->delayUS;
+	    devices[dev_cnt].wire1_setZero 	= fptrs->wire1_setZero;
+		devices[dev_cnt].wire1_setOne 	= fptrs->wire1_setOne;
+		devices[dev_cnt].wire1_read   	= fptrs->wire1_read;
+		devices[dev_cnt].enumerated     = 1;	//Fptrs set, set enumerated to allow resetPulse check
+		devices[dev_cnt].address 		= 0;
+		reading = DS18B20_resetPulse(&devices[dev_cnt]);
 		if(reading != 0)
 		{
 		 //No Device Detected
-			devices->enumerated = 0;	//Reset enumerated bit, not valid when we return 0 devices found but reset in case we use it in main logic anyway
+			devices[dev_cnt].enumerated = 0;	//Reset enumerated bit, not valid when we return 0 devices found but reset in case we use it in main logic anyway
 			return 0;
 		}
-		DS18B20_sendBusCMD(devices, DS18B20_CMD_SEARCH_ROM);
+		DS18B20_sendBusCMD(&devices[dev_cnt], DS18B20_CMD_SEARCH_ROM);
 		for(int x=0; x<DS18B20_ROM_CODE_BIT_SIZE; x++)
 		{
-			reading = DS18B20_readBusBit(devices);	//Read TX Bit 0
+			reading = DS18B20_readBusBit(&devices[dev_cnt]);	//Read TX Bit 0
 			reading <<= 1;
-			reading |= DS18B20_readBusBit(devices);	//Read TX ~Bit 0
+			reading |= DS18B20_readBusBit(&devices[dev_cnt]);	//Read TX ~Bit 0
 			switch(reading)
 			{
 				case 0:	//"00" Bus contention, Two Devices different address bits
@@ -267,34 +290,45 @@ int8_t DS18B20_init(DS18B20 *devices, DS18B20_BSP_FPTRS *fptrs, uint8_t max_devi
 					//Nothing to do as Address bits default to 0
 					break;
 				case 2:	//"10" Address 1 match
-					rom_code |= (uint64_t)1<<(DS18B20_ROM_CODE_BIT_SIZE-1-x);	//Store 1 in address, LSb first for CRC
 					address |= (uint64_t)1<<x;	//Store 1 in address, LSb as LSb
 					break;
 				case 3:	//"11" No Devices responded, maybe error in master TX bit?
-					devices->enumerated = 0;	//Reset enumerated bit, not valid when we return 0 devices found but reset in case we use it in main logic anyway
+					devices[dev_cnt].enumerated = 0;	//Reset enumerated bit, not valid when we return 0 devices found but reset in case we use it in main logic anyway
 					return dev_cnt;
 				default:
 					break;
 			}
-			DS18B20_sendBusBit(devices, ((uint64_t)address>>x) & 1);
+			DS18B20_sendBusBit(&devices[dev_cnt], ((uint64_t)address>>x) & 1);
 		}
 		//got entire address!!
 		//Check CRC
-		crc_value = (uint8_t)rom_code; //Store message CRC
-		rom_code >>= 8;	//Shift out recv'd crc code TODO: Parameterize
-		crc_cal = DS18B20_wire1_calcCRC((uint8_t *)&rom_code, DS18B20_ADDRESS_BIT_SIZE/8);
+		crc_value = (uint8_t)(address>>DS18B20_ROMCODE_CRC_OFFSET); //Store message CRC
+		//reverse crc_value for LSb first
+
+		crc_value = (uint8_t) (__RBIT(crc_value)>>24);
+		crc_cal = DS18B20_wire1_calcCRC_LSB((uint8_t *)&address, DS18B20_ADDRESS_BIT_SIZE/8);
 		if(crc_cal == crc_value)
 		{
 //			devices->enumerated = 1;	// enumerated already set
-			devices->address = address;
+			if(address == devices[0].address)	//Found device with same address, Don't enumerate again
+			{
+				devices[dev_cnt].enumerated = 0;
+				return dev_cnt;
+			}
+			devices[dev_cnt].address = address;
+			reading = DS18B20_getScratchPad(&devices[dev_cnt]);
+			if(reading != DS18B20_OK)
+			{
+				devices[dev_cnt].enumerated = 0;
+				return dev_cnt==0? reading:dev_cnt;
+				//Recall scratchpad ERROR!
+			}
 
-			devices->resolution = DS18B20_RESOLUTION_12BITS;
-			devices++;
 			dev_cnt++;
 		}
 		else	// Bus message error, loop again TODO: add retry/error cnt
 		{
-			devices->enumerated = 0;
+			devices[dev_cnt].enumerated = 0;
 			return dev_cnt;
 		}
 	}
@@ -304,22 +338,21 @@ int8_t DS18B20_init(DS18B20 *devices, DS18B20_BSP_FPTRS *fptrs, uint8_t max_devi
 /*
  * Device specific functions User MAY implement
  */
-////Calculate CRC based on CRC_POLY of 100110001, BITS are LSB First so
-__attribute__ ((weak)) uint8_t DS18B20_wire1_calcCRC(uint8_t *message, uint8_t byteLen)	//Weak function as instead of slow bit wise loop we can override it to utilize CRC hw module
+////Calculate CRC based on CRC_POLY of 100110001, CRC POLY works on LSb first so use uint32_t __RBIT(uint32_t value) to swap bits
+__attribute__ ((weak)) uint8_t DS18B20_wire1_calcCRC_LSB(uint8_t *message, uint8_t byteLen)	//Weak function as instead of slow bit wise loop we can override it to utilize CRC hw module
 {
 
 	uint16_t crc_poly = ((uint8_t)DS18B20_CRC_POLYNOMIAL)<<8;
 	uint16_t crc;
-
 	uint8_t xor_op=0;
 
-	crc = *(message+byteLen-1)<<8;
-	for(int x=byteLen-1; x>=0; x--)
+	crc = (uint16_t) (__RBIT(*(message))>>16);	//Swap the message bits back to LSb First
+	for(int x=1; x<=byteLen; x++)
 	{
 		crc &=0xFF00;
-		if(x > 0)	//Add next message byte to end
+		if(x < byteLen)	//Add next message byte to end
 		{
-			crc |= *(message+x-1);
+			crc |= (uint8_t) (__RBIT(*(message+x))>>24);	//Grab the next message byte and swap the bits back to LSb First
 		}
 
 		for(int y = 0; y<8; y++)

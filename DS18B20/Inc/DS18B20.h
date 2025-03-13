@@ -9,7 +9,9 @@ typedef enum
 {
 	DS18B20_OK = 0,
 	DS18B20_NULL_VALUE,
-	DS18B20_INVALID_ACCESS
+	DS18B20_INVALID_ACCESS,
+	DS18B20_BAD_CRC,
+
 } DS18B20_ERRORS;
 
 // Enum for Resolution time mapping to lookup table
@@ -42,9 +44,13 @@ typedef struct DS18B20
 	uint64_t address;					// DS18B20 Vender Address
 	uint8_t enumerated;					// Flag when device is enumerated and BSP fptrs are !NULL
 	uint8_t power_mode;					// Parasite power = 0
+	uint8_t scratchpad[DS18B20_SCRATCHPAD_BYTE_SIZE];	// Raw Values LSb first for CRC check
+	int8_t temperature_whole;			// Temperature Whole Number
+	uint16_t temperature_decimal;			// Temperature Decimal Number
+	int16_t temperature_raw;			// Raw Temperature Value MSb first
+	int8_t  th;	// High Temperature Alert Value MSb first
+	int8_t  tl;	// Low Temperature Alert Value MSb first
 	DS18B20_RESOLUTION resolution;		// Resolution mapping for conversion time lookup
-	uint8_t scratchpad[DS18B20_SCRATCHPAD_BYTE_SIZE];
-	int16_t temperature;
 } DS18B20;
 
 
@@ -60,7 +66,7 @@ int8_t DS18B20_getTemperature(DS18B20 *device, int16_t *value);
 #endif
 
 /* Device specific functions User MAY implement */
-uint8_t DS18B20_wire1_calcCRC(uint8_t *message, uint8_t byteLen);
+uint8_t DS18B20_wire1_calcCRC_LSB(uint8_t *message, uint8_t byteLen);
 
 /* Functions exposed only during DEBUG */
 #ifdef DS18B20_DEBUG
