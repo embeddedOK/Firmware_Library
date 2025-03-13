@@ -46,7 +46,7 @@ typedef struct DS18B20
 	uint8_t power_mode;					// Parasite power = 0
 	uint8_t scratchpad[DS18B20_SCRATCHPAD_BYTE_SIZE];	// Raw Values LSb first for CRC check
 	int8_t temperature_whole;			// Temperature Whole Number
-	uint16_t temperature_decimal;			// Temperature Decimal Number
+	uint8_t temperature_decimal;			// Temperature Decimal Number
 	int16_t temperature_raw;			// Raw Temperature Value MSb first
 	int8_t  th;	// High Temperature Alert Value MSb first
 	int8_t  tl;	// Low Temperature Alert Value MSb first

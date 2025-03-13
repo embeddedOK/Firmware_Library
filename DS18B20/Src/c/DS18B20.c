@@ -216,17 +216,17 @@ int8_t DS18B20_getScratchPad(DS18B20 * device)
 	if(crc_calc == crc_value)
 	{
 		//Valid Scratch Pad Data, grab the data
-		device->resolution = (uint8_t)(__RBIT(device->scratchpad[DS18B20_SCRATCHPAD_CONFIG_REG])>>24);
-		device->resolution = ((device->resolution>>DS18B20_CONFIG_REG_OFFSET) & DS18B20_CONFIG_REG_MASK);
+		device->resolution = ((device->scratchpad[DS18B20_SCRATCHPAD_CONFIG_REG]>>DS18B20_CONFIG_REG_OFFSET) & DS18B20_CONFIG_REG_MASK);
 
 		//Temperature Raw
 		device->temperature_raw = device->scratchpad[DS18B20_SCRATCHPAD_TEMPMSB]<<8 | device->scratchpad[DS18B20_SCRATCHPAD_TEMPLSB];
-		device->temperature_raw = (uint16_t)(__RBIT(device->temperature_raw)>>16);	//Swap Bits
 		device->temperature_raw &= DS18B20_TEMPERATURE_RESOLUTION_BITMASK[device->resolution];
 
+		device->temperature_whole = (int8_t)(((int16_t)device->temperature_raw)>>DS18B20_TEMPERATURE_WHOLE_OFFSET);
+		device->temperature_decimal = (uint8_t)(device->temperature_raw>>DS18B20_TEMPERATURE_DECIMAL_OFFSET)&DS18B20_TEMPERATURE_DECIMAL_MASK;
 		//Alert High and Low Temperatures
-		device->th = (int8_t)(__RBIT(device->scratchpad[DS18B20_SCRATCHPAD_TH])>>24);
-		device->tl = (int8_t)(__RBIT(device->scratchpad[DS18B20_SCRATCHPAD_TL])>>24);
+		device->th = device->scratchpad[DS18B20_SCRATCHPAD_TH];
+		device->tl = device->scratchpad[DS18B20_SCRATCHPAD_TL];
 	}
 	else
 	{
