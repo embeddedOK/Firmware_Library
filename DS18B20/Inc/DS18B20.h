@@ -4,6 +4,19 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* This Firmware driver does not support float points and instead returns the whole and decimal parts separately in a structure
+#ifdef DS18B20_FLOAT_POINT
+	typedef float DS18B20_TEMPERATURE ;
+#else
+	typedef int16_t DS18B20_TEMPERATURE;
+#endif
+*/
+typedef struct DS18B20_TEMPERATURE
+{
+	int8_t whole;
+	uint16_t decimal;
+} DS18B20_TEMPERATURE;
+
 // Enum for DS18B20 Errors
 typedef enum
 {
@@ -11,6 +24,7 @@ typedef enum
 	DS18B20_NULL_VALUE,
 	DS18B20_INVALID_ACCESS,
 	DS18B20_BAD_CRC,
+	DS18B20_BUS_IN_USE,
 
 } DS18B20_ERRORS;
 
@@ -26,44 +40,43 @@ typedef enum
 
 
 // Structure to hold the required user implemented Board Specific function pointers
-typedef struct DS18B20_BSP_FPTRS
+typedef struct DS18B20_wire1_interface
 {
 	void (*delayUS)(uint32_t delay);
-	void (*wire1_setZero)();
-	void (*wire1_setOne)();
-	uint8_t (*wire1_read)();
-} DS18B20_BSP_FPTRS;
+	void (*setZero)();
+	void (*setOne)();
+	uint8_t (*read)();
+	uint8_t in_use;
+} DS18B20_wire1_interface;
 
 // Structure holding DS28B20 device info
 typedef struct DS18B20
 {
-	void (*delayUS)(uint32_t delay);	// BSP function for microsecond delay
-	void (*wire1_setZero)();			// BSP function for wire1 set bus to zero
-	void (*wire1_setOne)();				// BSP function for wire1 set bus to one
-	uint8_t (*wire1_read)();			// BSP function to read wire1 bus
+	DS18B20_wire1_interface *wire1;		// Pointer to wire1 implement functions
+	uint8_t wire1_valid;				// wire1 pointers assigned and valid
 	uint64_t address;					// DS18B20 Vender Address
 	uint8_t enumerated;					// Flag when device is enumerated and BSP fptrs are !NULL
 	uint8_t power_mode;					// Parasite power = 0
+	uint8_t converting;					// Flag when device is converting
 	uint8_t scratchpad[DS18B20_SCRATCHPAD_BYTE_SIZE];	// Raw Values LSb first for CRC check
-	int8_t temperature_whole;			// Temperature Whole Number
-	uint8_t temperature_decimal;			// Temperature Decimal Number
-	int16_t temperature_raw;			// Raw Temperature Value MSb first
-	int8_t  th;	// High Temperature Alert Value MSb first
-	int8_t  tl;	// Low Temperature Alert Value MSb first
 	DS18B20_RESOLUTION resolution;		// Resolution mapping for conversion time lookup
+	int8_t  th;							// High Temperature Alert Value MSb first
+	int8_t  tl;							// Low Temperature Alert Value MSb first
+	int16_t temperature_raw;			// 16bit Raw Temperature value
+	int8_t temperature_whole;			// Temperature Whole Number
+	uint8_t temperature_decimal;		// Temperature Decimal Number
 } DS18B20;
 
 
 
 /* Global Functions Exposed */
-int8_t DS18B20_init(DS18B20 *devices, DS18B20_BSP_FPTRS *fptrs, uint8_t max_devices);
-uint8_t DS18B20_convertTemperature(DS18B20 *device, uint8_t wait_for_complete);
+int8_t DS18B20_init(DS18B20 *devices, DS18B20_wire1_interface *wire1_fptrs, uint8_t max_devices);
+uint8_t DS18B20_convertTemperatureDevice(DS18B20 *device, uint8_t wait_for_complete);
+uint8_t DS18B20_convertTemperatureAll(DS18B20 *device);
+uint8_t DS18B20_waitForBus(DS18B20 *device);
 
-#ifdef DS18B20_FLOAT_POINT
-int8_t DS18B20_getTemperature(DS18B20 *device, float *value);
-#else
-int8_t DS18B20_getTemperature(DS18B20 *device, int16_t *value);
-#endif
+
+int8_t DS18B20_getTemperature(DS18B20 *device, DS18B20_TEMPERATURE *value);
 
 /* Device specific functions User MAY implement */
 uint8_t DS18B20_wire1_calcCRC_LSB(uint8_t *message, uint8_t byteLen);

@@ -1,9 +1,15 @@
 /* DS18B20.c
  * 
- * Publicly avialable DS18B20 firmware driver from embeddedOK,LLC
+ * Publicly available DS18B20 firmware driver from embeddedOK,LLC
  * 
+ * TODO:
+ * 1: Loop through device tree and enumerate all devices
+ * 2: Allow resolution and TH/TL config
+ * 3: Get power mode and add function to enable mosfet during conversion, must wait for bus_in_use to be zero before return
+ * 4: Add check for alert function and return device number
  * 
- */
+ *
+*/
 #include <stdint.h>
 #include <stddef.h>
 //Include CMSIS for _RBIT()
@@ -34,49 +40,58 @@ int8_t DS18B20_resetPulse(DS18B20 *device)
 	uint32_t master_rx_time = 0; //Track time in Master RX mode, 480us Min
 	uint8_t reading = 0;
 
-	if(device->enumerated == 0)
+	if(device->wire1_valid == 0)
 	{
-		return -DS18B20_INVALID_ACCESS;
+		return -DS18B20_NULL_VALUE;	//Function Pointers are NULL
+	}
+
+	if(device->wire1->in_use == 1)
+	{
+		reading = DS18B20_waitForBus(device);
+		if(reading != DS18B20_OK)
+		{
+			return reading;
+		}
 	}
 
 	//Send Wire1 reset pulse width for 480us min
-	device->wire1_setZero();
-	device->delayUS(DS18B20_RESET_PULSE_WIDTH_MIN_US);
-	device->wire1_setOne();
+	device->wire1->setZero();
+	device->wire1->delayUS(DS18B20_RESET_PULSE_WIDTH_MIN_US);
+	device->wire1->setOne();
 
 	//Check for DS18B20 TX Presence response
-	device->delayUS(DS18B20_PRESENCE_PULSE_WAITS_MAX_US);
+	device->wire1->delayUS(DS18B20_PRESENCE_PULSE_WAITS_MAX_US);
 	master_rx_time += DS18B20_PRESENCE_PULSE_WAITS_MAX_US;
 
-	reading = device->wire1_read();
+	reading = device->wire1->read();
 	//Delay 15us and Read again
 	//Check for DS18B20 TX Presence
-	device->delayUS(DS18B20_PRESENCE_PULSE_RESAMPLE_US);
+	device->wire1->delayUS(DS18B20_PRESENCE_PULSE_RESAMPLE_US);
 	master_rx_time += DS18B20_PRESENCE_PULSE_RESAMPLE_US;
 	reading <<= 1;
-	reading |= device->wire1_read();
+	reading |= device->wire1->read();
 
 	//Wait for remaining Master RX mode Time
-	device->delayUS(DS18B20_RESET_PULSE_WIDTH_MIN_US-master_rx_time);
+	device->wire1->delayUS(DS18B20_RESET_PULSE_WIDTH_MIN_US-master_rx_time);
 
 	return reading;
 }
 
 int8_t DS18B20_sendBusStart(DS18B20 *device)
 {
-	if(device->enumerated == 0)
+	if(device->wire1_valid == 0)
 	{
-		return -DS18B20_INVALID_ACCESS;
+		return -DS18B20_NULL_VALUE;	//Function Pointers are NULL
 	}
 
 	//Wait for 1us recovery time in case we just sent a bit
-	device->wire1_setOne();
-	while(device->wire1_read() == 0);	//Wait for RC and bus to go high
+	device->wire1->setOne();
+	while(device->wire1->read() == 0);	//Wait for RC and bus to go high
 
-	device->delayUS(DS18B20_SLOT_RECOVERY_US);
-	device->wire1_setZero();
-	device->delayUS(DS18B20_START_OF_SLOT_MIN_US);
-	device->wire1_setOne();
+	device->wire1->delayUS(DS18B20_SLOT_RECOVERY_US);
+	device->wire1->setZero();
+	device->wire1->delayUS(DS18B20_START_OF_SLOT_MIN_US);
+	device->wire1->setOne();
 
 	return DS18B20_OK;
 }
@@ -91,16 +106,16 @@ int8_t DS18B20_sendBusBit(DS18B20 *device, uint8_t bit)
 
 	if(bit)
 	{
-		device->wire1_setOne();
+		device->wire1->setOne();
 	}
 	else
 	{
-		device->wire1_setZero();
+		device->wire1->setZero();
 	}
 
 	//Wait for DS18B20 Sample Time DS18B20_TIME_SLOT_MIN_US
-	device->delayUS(DS18B20_TIME_SLOT_MIN_US);
-	device->wire1_setOne();
+	device->wire1->delayUS(DS18B20_TIME_SLOT_MIN_US);
+	device->wire1->setOne();
 
 	return DS18B20_OK;
 }
@@ -114,18 +129,18 @@ int8_t DS18B20_readBusBit(DS18B20 * device)
 		return ret;
 	}
 
-	device->delayUS(SD18B20_MASTER_READ_SLOT_US-DS18B20_START_OF_SLOT_MIN_US);
-	reading = device->wire1_read();
-	device->delayUS(DS18B20_TIME_SLOT_MIN_US-SD18B20_MASTER_READ_SLOT_US);
+	device->wire1->delayUS(SD18B20_MASTER_READ_SLOT_US-DS18B20_START_OF_SLOT_MIN_US);
+	reading = device->wire1->read();
+	device->wire1->delayUS(DS18B20_TIME_SLOT_MIN_US-SD18B20_MASTER_READ_SLOT_US);
 
 	return reading;
 }
 
 int8_t DS18B20_sendBusCMD(DS18B20 * device, uint8_t cmd)
 {
-	if(device->enumerated == 0)
+	if(device->wire1_valid == 0)
 	{
-		return -DS18B20_INVALID_ACCESS;
+		return -DS18B20_NULL_VALUE;	//Function Pointers are NULL
 	}
 
 	for(int x=0; x<DS18B20_CMD_BIT_SIZE; x++)
@@ -155,11 +170,44 @@ int8_t DS18B20_matchROM(DS18B20 *device)
 	return DS18B20_OK;
 }
 
-uint8_t DS18B20_convertTemperature(DS18B20 *device, uint8_t wait_for_complete)
+int8_t DS18B20_skipROM(DS18B20 *device)
 {
+	int8_t ret = DS18B20_resetPulse(device);
+	if(ret != DS18B20_OK)	//reset the bus and verify device presence
+	{
+		return ret;
+	}
 
+	DS18B20_sendBusCMD(device, DS18B20_CMD_SKIP_ROM);
+
+	return DS18B20_OK;
+}
+
+uint8_t DS18B20_waitForBus(DS18B20 *device)
+{
+	if(device->wire1_valid == 0)
+	{
+		return -DS18B20_NULL_VALUE;
+	}
+
+	while(DS18B20_readBusBit(device) == 0);
+
+	device->wire1->in_use = 0;
+
+	return DS18B20_OK;
+}
+
+uint8_t DS18B20_convertTemperatureDevice(DS18B20 *device, uint8_t wait_for_complete)
+{
 	uint8_t check_cnt = 2;
-	int8_t ret = DS18B20_matchROM(device);
+	int8_t ret;
+
+	if(device->enumerated == 0)
+	{
+		return -DS18B20_INVALID_ACCESS;
+	}
+
+	ret = DS18B20_matchROM(device);
 	if(ret != DS18B20_OK)
 	{
 		return ret;
@@ -180,23 +228,66 @@ uint8_t DS18B20_convertTemperature(DS18B20 *device, uint8_t wait_for_complete)
 	{
 		return -1;
 	}
-
+	device->wire1->in_use = 1;
 	if(wait_for_complete)
 	{
 		uint32_t convert_time_US = DS18B20_CONVERSION_TIME_MS[device->resolution]*1000; //  Conversion delay in uS
-		device->delayUS(convert_time_US);
+		device->wire1->delayUS(convert_time_US);
 		while(DS18B20_readBusBit(device) == 0);
+		device->wire1->in_use = 0;
 	}
+
+	return DS18B20_OK;
+}
+uint8_t DS18B20_convertTemperatureAll(DS18B20 *device)
+{
+	uint8_t check_cnt = 2;
+	int8_t ret;
+
+	if(device->enumerated == 0)
+	{
+		return -DS18B20_INVALID_ACCESS;
+	}
+
+	ret = DS18B20_skipROM(device);
+	if(ret != DS18B20_OK)
+	{
+		return ret;
+	}
+
+	DS18B20_sendBusCMD(device, DS18B20_CMD_CONVERT_T);
+
+	for(; check_cnt > 0; check_cnt--)
+	{
+		ret = DS18B20_readBusBit(device);
+		if(ret == 0)
+		{
+			break;
+		}
+	}
+
+	if(check_cnt == 0)	//Never detected sensor conversion start
+	{
+		return -1;	//TODO: Error Code
+	}
+
+	device->wire1->in_use = 1;
 
 	return DS18B20_OK;
 }
 
 int8_t DS18B20_getScratchPad(DS18B20 * device)
 {
-	int8_t ret = DS18B20_matchROM(device);
+	int8_t ret;
 	uint8_t crc_calc = 0;
 	uint8_t crc_value = 0;
 
+	if(device->enumerated == 0)
+	{
+		return -DS18B20_INVALID_ACCESS;
+	}
+
+	ret = DS18B20_matchROM(device);
 	if(ret != DS18B20_OK)
 	{
 		return ret;
@@ -235,14 +326,22 @@ int8_t DS18B20_getScratchPad(DS18B20 * device)
 
 	return DS18B20_OK;
 }
-int8_t DS18B20_getTemperature(DS18B20 *device, int16_t *value)
+
+int8_t DS18B20_getTemperature(DS18B20 *device, DS18B20_TEMPERATURE *value)
 {
-	int8_t ret = DS18B20_getScratchPad(device);
-	*value = device->scratchpad[1]<<8 | device->scratchpad[0];
-	return ret;
+	uint8_t ret = DS18B20_getScratchPad(device);
+	if(ret != DS18B20_OK)
+	{
+		return ret;
+	}
+	value->whole = device->temperature_whole;
+	value->decimal = device->temperature_decimal * DS18B20_DECIMAL_LSB;
+
+	return DS18B20_OK;
 }
+
 // Enumerate up to max_devices DS18B20 devices utilizing the SEARCH ROM Command and populate the DS18B20 structure
-int8_t DS18B20_init(DS18B20 *devices, DS18B20_BSP_FPTRS *fptrs, uint8_t max_devices)
+int8_t DS18B20_init(DS18B20 *devices, DS18B20_wire1_interface *wire1_fptrs, uint8_t max_devices)
 {
 	uint64_t address = 0;
 	uint64_t address_contention = 0;
@@ -251,27 +350,26 @@ int8_t DS18B20_init(DS18B20 *devices, DS18B20_BSP_FPTRS *fptrs, uint8_t max_devi
 	uint8_t reading = 0;
 	uint8_t crc_cal = 0;
 
-	if(fptrs->delayUS 		== NULL
-	|| fptrs->wire1_setZero == NULL
-	|| fptrs->wire1_setOne 	== NULL
-	|| fptrs->wire1_read 	== NULL )
+	if(wire1_fptrs->delayUS == NULL
+			|| wire1_fptrs->setZero == NULL
+			|| wire1_fptrs->setOne 	== NULL
+			|| wire1_fptrs->read 	== NULL )
 	{
 		return -DS18B20_NULL_VALUE;
 	}
 
 	while(dev_cnt < max_devices)
 	{
-		devices[dev_cnt].delayUS 		= fptrs->delayUS;
-	    devices[dev_cnt].wire1_setZero 	= fptrs->wire1_setZero;
-		devices[dev_cnt].wire1_setOne 	= fptrs->wire1_setOne;
-		devices[dev_cnt].wire1_read   	= fptrs->wire1_read;
-		devices[dev_cnt].enumerated     = 1;	//Fptrs set, set enumerated to allow resetPulse check
+		devices[dev_cnt].wire1 			= wire1_fptrs;
+		devices[dev_cnt].wire1_valid 	= 1;
+		devices[dev_cnt].enumerated     = 0;
 		devices[dev_cnt].address 		= 0;
+
 		reading = DS18B20_resetPulse(&devices[dev_cnt]);
-		if(reading != 0)
+
+		if(reading != DS18B20_OK)
 		{
-		 //No Device Detected
-			devices[dev_cnt].enumerated = 0;	//Reset enumerated bit, not valid when we return 0 devices found but reset in case we use it in main logic anyway
+			//No Device Detected
 			return 0;
 		}
 		DS18B20_sendBusCMD(&devices[dev_cnt], DS18B20_CMD_SEARCH_ROM);
@@ -282,21 +380,20 @@ int8_t DS18B20_init(DS18B20 *devices, DS18B20_BSP_FPTRS *fptrs, uint8_t max_devi
 			reading |= DS18B20_readBusBit(&devices[dev_cnt]);	//Read TX ~Bit 0
 			switch(reading)
 			{
-				case 0:	//"00" Bus contention, Two Devices different address bits
-					address_contention |= (uint64_t)1<<x;	//Store for later use, navigate 0 address first
-					//TODO: loop through device tree branches to enumerate multiple devices
-					break;
-				case 1:	//"01" Address 0 match
-					//Nothing to do as Address bits default to 0
-					break;
-				case 2:	//"10" Address 1 match
-					address |= (uint64_t)1<<x;	//Store 1 in address, LSb as LSb
-					break;
-				case 3:	//"11" No Devices responded, maybe error in master TX bit?
-					devices[dev_cnt].enumerated = 0;	//Reset enumerated bit, not valid when we return 0 devices found but reset in case we use it in main logic anyway
-					return dev_cnt;
-				default:
-					break;
+			case 0:	//"00" Bus contention, Two Devices different address bits
+				address_contention |= (uint64_t)1<<x;	//Store for later use, navigate 0 address first
+				//TODO: loop through device tree branches to enumerate multiple devices
+				break;
+			case 1:	//"01" Address 0 match
+				//Nothing to do as Address bits default to 0
+				break;
+			case 2:	//"10" Address 1 match
+				address |= (uint64_t)1<<x;	//Store 1 in address, LSb as LSb
+				break;
+			case 3:	//"11" No Devices responded, maybe error in master TX bit?
+				return dev_cnt;
+			default:
+				break;
 			}
 			DS18B20_sendBusBit(&devices[dev_cnt], ((uint64_t)address>>x) & 1);
 		}
@@ -309,10 +406,9 @@ int8_t DS18B20_init(DS18B20 *devices, DS18B20_BSP_FPTRS *fptrs, uint8_t max_devi
 		crc_cal = DS18B20_wire1_calcCRC_LSB((uint8_t *)&address, DS18B20_ADDRESS_BIT_SIZE/8);
 		if(crc_cal == crc_value)
 		{
-//			devices->enumerated = 1;	// enumerated already set
+			devices[dev_cnt].enumerated = 1;	// enumerated already set
 			if(address == devices[0].address)	//Found device with same address, Don't enumerate again
 			{
-				devices[dev_cnt].enumerated = 0;
 				return dev_cnt;
 			}
 			devices[dev_cnt].address = address;
@@ -328,7 +424,6 @@ int8_t DS18B20_init(DS18B20 *devices, DS18B20_BSP_FPTRS *fptrs, uint8_t max_devi
 		}
 		else	// Bus message error, loop again TODO: add retry/error cnt
 		{
-			devices[dev_cnt].enumerated = 0;
 			return dev_cnt;
 		}
 	}
@@ -376,16 +471,16 @@ __attribute__ ((weak)) uint8_t DS18B20_wire1_calcCRC_LSB(uint8_t *message, uint8
 #ifdef DS18B20_DEBUG
 void DS18B20_wire1_debugToggle(DS18B20 *device)
 {
-	if(device->enumerated ==0)
+	if(device->wire1_valid ==0)
 	{
 		return;
 	}
 	for(int x=0; x<100; x++)
 	{
-		device->delayUS(1);
-		device->wire1_setZero();
-		device->delayUS(2);
-		device->wire1_setOne();
+		device->wire1->delayUS(1);
+		device->wire1->setZero();
+		device->wire1->delayUS(2);
+		device->wire1->setOne();
 	}
 }
 #endif
