@@ -4,16 +4,10 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* This Firmware driver does not support float points and instead returns the whole and decimal parts separately in a structure
-#ifdef DS18B20_FLOAT_POINT
-	typedef float DS18B20_TEMPERATURE ;
-#else
-	typedef int16_t DS18B20_TEMPERATURE;
-#endif
-*/
+/* This Firmware driver does not support float points and instead returns the whole and decimal parts separately in a structure */
 typedef struct DS18B20_TEMPERATURE
 {
-	int8_t whole;
+	int8_t integer;
 	uint16_t decimal;
 } DS18B20_TEMPERATURE;
 
@@ -63,7 +57,7 @@ typedef struct DS18B20
 	int8_t  th;							// High Temperature Alert Value MSb first
 	int8_t  tl;							// Low Temperature Alert Value MSb first
 	int16_t temperature_raw;			// 16bit Raw Temperature value
-	int8_t temperature_whole;			// Temperature Whole Number
+	int8_t temperature_integer;			// Temperature Integer Number
 	uint8_t temperature_decimal;		// Temperature Decimal Number
 } DS18B20;
 

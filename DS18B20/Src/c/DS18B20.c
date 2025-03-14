@@ -313,7 +313,7 @@ int8_t DS18B20_getScratchPad(DS18B20 * device)
 		device->temperature_raw = device->scratchpad[DS18B20_SCRATCHPAD_TEMPMSB]<<8 | device->scratchpad[DS18B20_SCRATCHPAD_TEMPLSB];
 		device->temperature_raw &= DS18B20_TEMPERATURE_RESOLUTION_BITMASK[device->resolution];
 
-		device->temperature_whole = (int8_t)(((int16_t)device->temperature_raw)>>DS18B20_TEMPERATURE_WHOLE_OFFSET);
+		device->temperature_integer = (int8_t)(((int16_t)device->temperature_raw)>>DS18B20_TEMPERATURE_WHOLE_OFFSET);
 		device->temperature_decimal = (uint8_t)(device->temperature_raw>>DS18B20_TEMPERATURE_DECIMAL_OFFSET)&DS18B20_TEMPERATURE_DECIMAL_MASK;
 		//Alert High and Low Temperatures
 		device->th = device->scratchpad[DS18B20_SCRATCHPAD_TH];
@@ -334,7 +334,7 @@ int8_t DS18B20_getTemperature(DS18B20 *device, DS18B20_TEMPERATURE *value)
 	{
 		return ret;
 	}
-	value->whole = device->temperature_whole;
+	value->integer = device->temperature_integer;
 	value->decimal = device->temperature_decimal * DS18B20_DECIMAL_LSB;
 
 	return DS18B20_OK;
