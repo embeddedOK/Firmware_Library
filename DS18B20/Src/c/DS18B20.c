@@ -343,8 +343,9 @@ int8_t DS18B20_getTemperature(DS18B20 *device, DS18B20_TEMPERATURE *value)
 // Enumerate up to max_devices DS18B20 devices utilizing the SEARCH ROM Command and populate the DS18B20 structure
 int8_t DS18B20_init(DS18B20 *devices, DS18B20_wire1_interface *wire1_fptrs, uint8_t max_devices)
 {
-	uint64_t address = 0;
-	uint64_t address_contention = 0;
+	uint64_t address = 0;				// 64 bit device address
+	uint64_t address_contention = 0;	// Detect address contention on during SEARCH_ROM Command
+	uint64_t address_completed = 0;		// Track which address paths are completed
 	uint8_t  crc_value = 0;
 	uint8_t dev_cnt = 0;
 	uint8_t reading = 0;
@@ -364,7 +365,7 @@ int8_t DS18B20_init(DS18B20 *devices, DS18B20_wire1_interface *wire1_fptrs, uint
 		devices[dev_cnt].wire1_valid 	= 1;
 		devices[dev_cnt].enumerated     = 0;
 		devices[dev_cnt].address 		= 0;
-
+		address = 0;
 		reading = DS18B20_resetPulse(&devices[dev_cnt]);
 
 		if(reading != DS18B20_OK)
@@ -382,7 +383,11 @@ int8_t DS18B20_init(DS18B20 *devices, DS18B20_wire1_interface *wire1_fptrs, uint
 			{
 			case 0:	//"00" Bus contention, Two Devices different address bits
 				address_contention |= (uint64_t)1<<x;	//Store for later use, navigate 0 address first
-				//TODO: loop through device tree branches to enumerate multiple devices
+				if(address_completed>>x & 0x1)	//0 Path was already completed check 1 path
+				{
+					address |= (uint64_t)1<<x;
+				}
+
 				break;
 			case 1:	//"01" Address 0 match
 				//Nothing to do as Address bits default to 0
@@ -397,7 +402,25 @@ int8_t DS18B20_init(DS18B20 *devices, DS18B20_wire1_interface *wire1_fptrs, uint
 			}
 			DS18B20_sendBusBit(&devices[dev_cnt], ((uint64_t)address>>x) & 1);
 		}
-		//got entire address!!
+
+		//got entire address!! Update path complete bits
+		for(int x=DS18B20_ROM_CODE_BIT_SIZE-1; x>0; x--)
+		{
+			if(address_contention>>x & 0x1)	//Not the first loop through, check if there is a bit
+			{
+				if(address_completed>>x & 0x1)	//Address 0 and 1 Path Completed, clear bits
+				{
+					address_completed  &= (uint64_t)~(1<<x); //Clear completed bit
+					address_contention &= (uint64_t)~(1<<x); //Clear contention bit
+				}
+				else
+				{
+					address_completed  |= (uint64_t)(1<<x); //0 path completed bit
+					break;
+				}
+			}
+		}
+
 		//Check CRC
 		crc_value = (uint8_t)(address>>DS18B20_ROMCODE_CRC_OFFSET); //Store message CRC
 		//reverse crc_value for LSb first
@@ -425,6 +448,11 @@ int8_t DS18B20_init(DS18B20 *devices, DS18B20_wire1_interface *wire1_fptrs, uint
 		else	// Bus message error, loop again TODO: add retry/error cnt
 		{
 			return dev_cnt;
+		}
+
+		if(address_contention == 0)	//Cleared contentions, scan complete
+		{
+			break;
 		}
 	}
 	return dev_cnt;
