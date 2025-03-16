@@ -3,11 +3,8 @@
  * Publicly available DS18B20 firmware driver from embeddedOK,LLC
  * 
  * TODO:
- * 1: Loop through device tree and enumerate all devices
- * 2: Allow resolution and TH/TL config
- * 3: Get power mode and add function to enable mosfet during conversion, must wait for bus_in_use to be zero before return
- * 4: Add check for alert function and return device number
- * 
+ * - Add check for alert function and return device number
+ * - Add EEPROM write and recall
  *
 */
 #include <stdint.h>
@@ -35,6 +32,98 @@ const uint32_t DS18B20_TEMPERATURE_RESOLUTION_BITMASK[] =
 		DS18B20_CONFIG_12BITS_BITMASK
 };
 
+int8_t DS18B20_sendBusStart(DS18B20 *device)
+{
+	if(device->wire1_valid == 0)
+	{
+		return -DS18B20_NULL_VALUE;	//Function Pointers are NULL
+	}
+
+	//Wait for 1us recovery time in case we just sent a bit
+	device->wire1->setBus(1);
+	while(device->wire1->read() == 0);	//Wait for RC and bus to go high
+
+	device->wire1->delayUS(DS18B20_SLOT_RECOVERY_US);
+	device->wire1->setBus(0);
+	device->wire1->delayUS(DS18B20_START_OF_SLOT_MIN_US);
+	device->wire1->setBus(1);
+
+	return DS18B20_OK;
+}
+
+int8_t DS18B20_sendBusBit(DS18B20 *device, uint8_t bit)
+{
+	int8_t ret = DS18B20_sendBusStart(device);
+	if(ret != DS18B20_OK)
+	{
+		return ret;
+	}
+
+	if(bit)
+	{
+		device->wire1->setBus(1);
+	}
+	else
+	{
+		device->wire1->setBus(0);
+	}
+
+	//Wait for DS18B20 Sample Time DS18B20_TIME_SLOT_MIN_US
+	device->wire1->delayUS(DS18B20_TIME_SLOT_MIN_US);
+	device->wire1->setBus(1);
+
+	return DS18B20_OK;
+}
+
+int8_t DS18B20_readBusBit(DS18B20 * device)
+{
+	int8_t reading = 0;
+	int8_t ret = DS18B20_sendBusStart(device);
+	if(ret != DS18B20_OK)
+	{
+		return ret;
+	}
+
+	device->wire1->delayUS(SD18B20_MASTER_READ_SLOT_US-DS18B20_START_OF_SLOT_MIN_US);
+	reading = device->wire1->read();
+	device->wire1->delayUS(DS18B20_TIME_SLOT_MIN_US-SD18B20_MASTER_READ_SLOT_US);
+
+	return reading;
+}
+
+int8_t DS18B20_sendBusByte(DS18B20 * device, uint8_t byte)
+{
+	if(device->wire1_valid == 0)
+	{
+		return -DS18B20_NULL_VALUE;	//Function Pointers are NULL
+	}
+
+	for(int x=0; x<8; x++)
+	{
+		DS18B20_sendBusBit(device, byte&1);
+		byte >>=1;	//Right shift cmd
+	}
+
+	return DS18B20_OK;
+}
+
+int8_t DS18B20_waitForBus(DS18B20 *device)
+{
+	if(device->wire1_valid == 0)
+	{
+		return -DS18B20_NULL_VALUE;
+	}
+
+	while(DS18B20_readBusBit(device) == 0)
+	{
+		device->wire1->delayUS(DS18B20_WAIT_FOR_BUS_DELAY_US);
+	}
+
+	device->wire1->in_use = 0;
+
+	return DS18B20_OK;
+}
+
 int8_t DS18B20_resetPulse(DS18B20 *device)
 {
 	uint32_t master_rx_time = 0; //Track time in Master RX mode, 480us Min
@@ -52,12 +141,17 @@ int8_t DS18B20_resetPulse(DS18B20 *device)
 		{
 			return reading;
 		}
+		//Disable Parasite Power in case it was used
+		if(device->power_mode == DS18B20_POWER_PARASITE)
+		{
+			device->wire1->enableParasitePower(0);
+		}
 	}
 
 	//Send Wire1 reset pulse width for 480us min
-	device->wire1->setZero();
+	device->wire1->setBus(0);
 	device->wire1->delayUS(DS18B20_RESET_PULSE_WIDTH_MIN_US);
-	device->wire1->setOne();
+	device->wire1->setBus(1);
 
 	//Check for DS18B20 TX Presence response
 	device->wire1->delayUS(DS18B20_PRESENCE_PULSE_WAITS_MAX_US);
@@ -77,82 +171,6 @@ int8_t DS18B20_resetPulse(DS18B20 *device)
 	return reading;
 }
 
-int8_t DS18B20_sendBusStart(DS18B20 *device)
-{
-	if(device->wire1_valid == 0)
-	{
-		return -DS18B20_NULL_VALUE;	//Function Pointers are NULL
-	}
-
-	//Wait for 1us recovery time in case we just sent a bit
-	device->wire1->setOne();
-	while(device->wire1->read() == 0);	//Wait for RC and bus to go high
-
-	device->wire1->delayUS(DS18B20_SLOT_RECOVERY_US);
-	device->wire1->setZero();
-	device->wire1->delayUS(DS18B20_START_OF_SLOT_MIN_US);
-	device->wire1->setOne();
-
-	return DS18B20_OK;
-}
-
-int8_t DS18B20_sendBusBit(DS18B20 *device, uint8_t bit)
-{
-	int8_t ret = DS18B20_sendBusStart(device);
-	if(ret != DS18B20_OK)
-	{
-		return ret;
-	}
-
-	if(bit)
-	{
-		device->wire1->setOne();
-	}
-	else
-	{
-		device->wire1->setZero();
-	}
-
-	//Wait for DS18B20 Sample Time DS18B20_TIME_SLOT_MIN_US
-	device->wire1->delayUS(DS18B20_TIME_SLOT_MIN_US);
-	device->wire1->setOne();
-
-	return DS18B20_OK;
-}
-
-int8_t DS18B20_readBusBit(DS18B20 * device)
-{
-	uint8_t reading = 0;
-	int8_t ret = DS18B20_sendBusStart(device);
-	if(ret != DS18B20_OK)
-	{
-		return ret;
-	}
-
-	device->wire1->delayUS(SD18B20_MASTER_READ_SLOT_US-DS18B20_START_OF_SLOT_MIN_US);
-	reading = device->wire1->read();
-	device->wire1->delayUS(DS18B20_TIME_SLOT_MIN_US-SD18B20_MASTER_READ_SLOT_US);
-
-	return reading;
-}
-
-int8_t DS18B20_sendBusCMD(DS18B20 * device, uint8_t cmd)
-{
-	if(device->wire1_valid == 0)
-	{
-		return -DS18B20_NULL_VALUE;	//Function Pointers are NULL
-	}
-
-	for(int x=0; x<DS18B20_CMD_BIT_SIZE; x++)
-	{
-		DS18B20_sendBusBit(device, cmd&1);
-		cmd >>=1;	//Right shift cmd
-	}
-
-	return DS18B20_OK;
-}
-
-
 int8_t DS18B20_matchROM(DS18B20 *device)
 {
 	int8_t ret = DS18B20_resetPulse(device);
@@ -161,7 +179,7 @@ int8_t DS18B20_matchROM(DS18B20 *device)
 		return ret;
 	}
 
-	DS18B20_sendBusCMD(device, DS18B20_CMD_MATCH_ROM);
+	DS18B20_sendBusByte(device, DS18B20_CMD_MATCH_ROM);
 
 	for(int x=0; x<DS18B20_ROM_CODE_BIT_SIZE; x++)
 	{
@@ -178,26 +196,38 @@ int8_t DS18B20_skipROM(DS18B20 *device)
 		return ret;
 	}
 
-	DS18B20_sendBusCMD(device, DS18B20_CMD_SKIP_ROM);
+	DS18B20_sendBusByte(device, DS18B20_CMD_SKIP_ROM);
 
 	return DS18B20_OK;
 }
 
-uint8_t DS18B20_waitForBus(DS18B20 *device)
+int8_t DS18B20_readPowerMode(DS18B20 *device)
 {
-	if(device->wire1_valid == 0)
+	int8_t ret;
+	if(device->enumerated == 0)
 	{
-		return -DS18B20_NULL_VALUE;
+		return -DS18B20_INVALID_ACCESS;
 	}
 
-	while(DS18B20_readBusBit(device) == 0);
+	ret = DS18B20_matchROM(device);
+	if(ret != DS18B20_OK)
+	{
+		return ret;
+	}
 
-	device->wire1->in_use = 0;
+	DS18B20_sendBusByte(device, DS18B20_CMD_READ_POWER_SUPPLY);
+
+	ret = DS18B20_readBusBit(device);
+	if(ret < 0)	// Already verified function ptrs are OK so readBusBit should never return an error, check just in case
+	{
+		return ret;
+	}
+	device->power_mode = ret;
 
 	return DS18B20_OK;
 }
 
-uint8_t DS18B20_convertTemperatureDevice(DS18B20 *device, uint8_t wait_for_complete)
+int8_t DS18B20_convertTemperatureDevice(DS18B20 *device)
 {
 	uint8_t check_cnt = 2;
 	int8_t ret;
@@ -213,7 +243,11 @@ uint8_t DS18B20_convertTemperatureDevice(DS18B20 *device, uint8_t wait_for_compl
 		return ret;
 	}
 
-	DS18B20_sendBusCMD(device, DS18B20_CMD_CONVERT_T);
+	DS18B20_sendBusByte(device, DS18B20_CMD_CONVERT_T);
+	if(device->power_mode == DS18B20_POWER_PARASITE)
+	{
+		device->wire1->enableParasitePower(1);
+	}
 
 	for(; check_cnt > 0; check_cnt--)
 	{
@@ -222,24 +256,26 @@ uint8_t DS18B20_convertTemperatureDevice(DS18B20 *device, uint8_t wait_for_compl
 		{
 			break;
 		}
+		else if( ret < 0)
+		{
+			return ret;
+		}
 	}
 
 	if(check_cnt == 0)	//Never detected sensor conversion start
 	{
-		return -1;
+		if(device->power_mode == DS18B20_POWER_PARASITE)
+		{
+			device->wire1->enableParasitePower(0);
+		}
+		return -DS18B20_BUS_ACTION_FAILED;
 	}
 	device->wire1->in_use = 1;
-	if(wait_for_complete)
-	{
-		uint32_t convert_time_US = DS18B20_CONVERSION_TIME_MS[device->resolution]*1000; //  Conversion delay in uS
-		device->wire1->delayUS(convert_time_US);
-		while(DS18B20_readBusBit(device) == 0);
-		device->wire1->in_use = 0;
-	}
 
 	return DS18B20_OK;
 }
-uint8_t DS18B20_convertTemperatureAll(DS18B20 *device)
+
+int8_t DS18B20_convertTemperatureAll(DS18B20 *device)
 {
 	uint8_t check_cnt = 2;
 	int8_t ret;
@@ -255,8 +291,13 @@ uint8_t DS18B20_convertTemperatureAll(DS18B20 *device)
 		return ret;
 	}
 
-	DS18B20_sendBusCMD(device, DS18B20_CMD_CONVERT_T);
+	DS18B20_sendBusByte(device, DS18B20_CMD_CONVERT_T);
 
+	// Check device for power mode
+	if(device->power_mode == DS18B20_POWER_PARASITE)
+	{
+		device->wire1->enableParasitePower(1);
+	}
 	for(; check_cnt > 0; check_cnt--)
 	{
 		ret = DS18B20_readBusBit(device);
@@ -268,7 +309,11 @@ uint8_t DS18B20_convertTemperatureAll(DS18B20 *device)
 
 	if(check_cnt == 0)	//Never detected sensor conversion start
 	{
-		return -1;	//TODO: Error Code
+		if(device->power_mode == DS18B20_POWER_PARASITE)
+		{
+			device->wire1->enableParasitePower(0);
+		}
+		return -DS18B20_BUS_ACTION_FAILED;
 	}
 
 	device->wire1->in_use = 1;
@@ -276,7 +321,7 @@ uint8_t DS18B20_convertTemperatureAll(DS18B20 *device)
 	return DS18B20_OK;
 }
 
-int8_t DS18B20_getScratchPad(DS18B20 * device)
+int8_t DS18B20_readScratchpad(DS18B20 * device)
 {
 	int8_t ret;
 	uint8_t crc_calc = 0;
@@ -293,7 +338,7 @@ int8_t DS18B20_getScratchPad(DS18B20 * device)
 		return ret;
 	}
 
-	DS18B20_sendBusCMD(device, DS18B20_CMD_READ_SCRATCHPAD);
+	DS18B20_sendBusByte(device, DS18B20_CMD_READ_SCRATCHPAD);
 	for(int x=0; x<DS18B20_SCRATCHPAD_BYTE_SIZE; x++)
 	{
 		device->scratchpad[x] = 0;
@@ -315,27 +360,73 @@ int8_t DS18B20_getScratchPad(DS18B20 * device)
 
 		device->temperature_integer = (int8_t)(((int16_t)device->temperature_raw)>>DS18B20_TEMPERATURE_WHOLE_OFFSET);
 		device->temperature_decimal = (uint8_t)(device->temperature_raw>>DS18B20_TEMPERATURE_DECIMAL_OFFSET)&DS18B20_TEMPERATURE_DECIMAL_MASK;
+		device->temperature_decimal *= DS18B20_TEMPERATURE_DECIMAL_LSB;
 		//Alert High and Low Temperatures
 		device->th = device->scratchpad[DS18B20_SCRATCHPAD_TH];
 		device->tl = device->scratchpad[DS18B20_SCRATCHPAD_TL];
 	}
 	else
 	{
-		return -DS18B20_BAD_CRC;
+		return -DS18B20_CRC_ERROR;
+	}
+
+	ret = DS18B20_readPowerMode(device);
+	if(ret != DS18B20_OK)
+	{
+		return ret;
 	}
 
 	return DS18B20_OK;
 }
 
-int8_t DS18B20_getTemperature(DS18B20 *device, DS18B20_TEMPERATURE *value)
+int8_t DS18B20_writeScratchpad(DS18B20 *device)
 {
-	uint8_t ret = DS18B20_getScratchPad(device);
+	int ret;
+	uint8_t th, tl, resolution;
+	if(device->enumerated == 0)
+	{
+		return -DS18B20_INVALID_ACCESS;
+	}
+
+	ret = DS18B20_matchROM(device);
 	if(ret != DS18B20_OK)
 	{
 		return ret;
 	}
-	value->integer = device->temperature_integer;
-	value->decimal = device->temperature_decimal * DS18B20_DECIMAL_LSB;
+	th = device->th;
+	tl = device->tl;
+	resolution = (uint8_t)(device->resolution<<DS18B20_CONFIG_REG_OFFSET);
+
+	DS18B20_sendBusByte(device, DS18B20_CMD_WRITE_SCRATCHPAD);
+	// Send 3 bytes TH, TL and Resolution
+	DS18B20_sendBusByte(device, th);
+	DS18B20_sendBusByte(device, tl);
+	DS18B20_sendBusByte(device, resolution);
+
+	//Read scratchpad and verify data was written successfully
+	ret = DS18B20_readScratchpad(device);
+	if(ret != DS18B20_OK)
+	{
+		return ret;
+	}
+	//Check if data stored and was recalled successfully
+	if(th != device->th
+	|| tl != device->tl
+	|| resolution != ((device->resolution>>DS18B20_CONFIG_REG_OFFSET)&DS18B20_CONFIG_REG_MASK))
+	{
+		return -DS18B20_DATA_ERROR;
+	}
+	return DS18B20_OK;
+}
+
+
+int8_t DS18B20_getTemperature(DS18B20 *device)
+{
+	uint8_t ret = DS18B20_readScratchpad(device);
+	if(ret != DS18B20_OK)
+	{
+		return ret;
+	}
 
 	return DS18B20_OK;
 }
@@ -352,9 +443,9 @@ int8_t DS18B20_init(DS18B20 *devices, DS18B20_wire1_interface *wire1_fptrs, uint
 	uint8_t crc_cal = 0;
 
 	if(wire1_fptrs->delayUS == NULL
-			|| wire1_fptrs->setZero == NULL
-			|| wire1_fptrs->setOne 	== NULL
-			|| wire1_fptrs->read 	== NULL )
+	|| wire1_fptrs->setBus 	== NULL
+	|| wire1_fptrs->enableParasitePower 	== NULL
+	|| wire1_fptrs->read 	== NULL )
 	{
 		return -DS18B20_NULL_VALUE;
 	}
@@ -373,7 +464,7 @@ int8_t DS18B20_init(DS18B20 *devices, DS18B20_wire1_interface *wire1_fptrs, uint
 			//No Device Detected
 			return 0;
 		}
-		DS18B20_sendBusCMD(&devices[dev_cnt], DS18B20_CMD_SEARCH_ROM);
+		DS18B20_sendBusByte(&devices[dev_cnt], DS18B20_CMD_SEARCH_ROM);
 		for(int x=0; x<DS18B20_ROM_CODE_BIT_SIZE; x++)
 		{
 			reading = DS18B20_readBusBit(&devices[dev_cnt]);	//Read TX Bit 0
@@ -433,9 +524,10 @@ int8_t DS18B20_init(DS18B20 *devices, DS18B20_wire1_interface *wire1_fptrs, uint
 			if(address == devices[0].address)	//Found device with same address, Don't enumerate again
 			{
 				return dev_cnt;
+
 			}
 			devices[dev_cnt].address = address;
-			reading = DS18B20_getScratchPad(&devices[dev_cnt]);
+			reading = DS18B20_readScratchpad(&devices[dev_cnt]);
 			if(reading != DS18B20_OK)
 			{
 				devices[dev_cnt].enumerated = 0;
@@ -506,9 +598,9 @@ void DS18B20_wire1_debugToggle(DS18B20 *device)
 	for(int x=0; x<100; x++)
 	{
 		device->wire1->delayUS(1);
-		device->wire1->setZero();
+		device->wire1->setBus(0);
 		device->wire1->delayUS(2);
-		device->wire1->setOne();
+		device->wire1->setBus(1);
 	}
 }
 #endif
