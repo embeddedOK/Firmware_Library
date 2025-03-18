@@ -3,7 +3,6 @@
  * Publicly available DS18B20 firmware driver from embeddedOK,LLC
  * 
  * TODO:
- * - Add check for alert function and return device number
  * - Add EEPROM write and recall
  *
 */
@@ -431,29 +430,29 @@ int8_t DS18B20_getTemperature(DS18B20 *device)
 	return DS18B20_OK;
 }
 
-// Enumerate up to max_devices DS18B20 devices utilizing the SEARCH ROM Command and populate the DS18B20 structure
-int8_t DS18B20_init(DS18B20 *devices, DS18B20_wire1_interface *wire1_fptrs, uint8_t max_devices)
+// Scan through the devices address tree with passed CMD (SEARCH ROM or ALARM) and store returned address in devices pointer,
+// First device pointed to in devices MUST already have valid wire1 function pointers.
+int8_t DS18B20_ScanAddressTree(DS18B20 *devices, uint8_t max_devices, uint8_t CMD)
 {
+	int8_t reading;
+	int8_t dev_cnt = 0;
 	uint64_t address = 0;				// 64 bit device address
 	uint64_t address_contention = 0;	// Detect address contention on during SEARCH_ROM Command
 	uint64_t address_completed = 0;		// Track which address paths are completed
 	uint8_t  crc_value = 0;
-	uint8_t dev_cnt = 0;
-	uint8_t reading = 0;
-	uint8_t crc_cal = 0;
 
-	if(wire1_fptrs->delayUS == NULL
-	|| wire1_fptrs->setBus 	== NULL
-	|| wire1_fptrs->enableParasitePower 	== NULL
-	|| wire1_fptrs->read 	== NULL )
+	if(CMD != DS18B20_CMD_SEARCH_ROM
+	&& CMD != DS18B20_CMD_ALARM_SEARCH)
 	{
-		return -DS18B20_NULL_VALUE;
+		return -DS18B20_INVALID_ACCESS;
 	}
-
 	while(dev_cnt < max_devices)
 	{
-		devices[dev_cnt].wire1 			= wire1_fptrs;
-		devices[dev_cnt].wire1_valid 	= 1;
+		if(dev_cnt > 0)
+		{
+			devices[dev_cnt].wire1 			= devices[0].wire1;	// First devices on Bus MUST already have valid wire1 function pointers
+			devices[dev_cnt].wire1_valid 	= 1;
+		}
 		devices[dev_cnt].enumerated     = 0;
 		devices[dev_cnt].address 		= 0;
 		address = 0;
@@ -464,7 +463,7 @@ int8_t DS18B20_init(DS18B20 *devices, DS18B20_wire1_interface *wire1_fptrs, uint
 			//No Device Detected
 			return 0;
 		}
-		DS18B20_sendBusByte(&devices[dev_cnt], DS18B20_CMD_SEARCH_ROM);
+		DS18B20_sendBusByte(&devices[dev_cnt], CMD);
 		for(int x=0; x<DS18B20_ROM_CODE_BIT_SIZE; x++)
 		{
 			reading = DS18B20_readBusBit(&devices[dev_cnt]);	//Read TX Bit 0
@@ -517,24 +516,22 @@ int8_t DS18B20_init(DS18B20 *devices, DS18B20_wire1_interface *wire1_fptrs, uint
 		//reverse crc_value for LSb first
 
 		crc_value = (uint8_t) (__RBIT(crc_value)>>24);
-		crc_cal = DS18B20_wire1_calcCRC_LSB((uint8_t *)&address, DS18B20_ADDRESS_BIT_SIZE/8);
-		if(crc_cal == crc_value)
+
+		if(crc_value == DS18B20_wire1_calcCRC_LSB((uint8_t *)&address, DS18B20_ADDRESS_BIT_SIZE/8))
 		{
-			devices[dev_cnt].enumerated = 1;	// enumerated already set
-			if(address == devices[0].address)	//Found device with same address, Don't enumerate again
+			if(address == devices[0].address)	// Found device with same address, Don't enumerate again
 			{
 				return dev_cnt;
 
 			}
+			devices[dev_cnt].enumerated = 1;	// Set device enumerated flag
 			devices[dev_cnt].address = address;
-			reading = DS18B20_readScratchpad(&devices[dev_cnt]);
+
+			reading = DS18B20_readScratchpad(&devices[dev_cnt]);	//Read Scratchpad values
 			if(reading != DS18B20_OK)
 			{
-				devices[dev_cnt].enumerated = 0;
-				return dev_cnt==0? reading:dev_cnt;
-				//Recall scratchpad ERROR!
+				//return ret; //Recall scratchpad ERROR! TODO: Handle read error?
 			}
-
 			dev_cnt++;
 		}
 		else	// Bus message error, loop again TODO: add retry/error cnt
@@ -548,6 +545,61 @@ int8_t DS18B20_init(DS18B20 *devices, DS18B20_wire1_interface *wire1_fptrs, uint
 		}
 	}
 	return dev_cnt;
+}
+
+// Enumerate up to max_devices DS18B20 devices utilizing the SEARCH ROM Command and populate the DS18B20 structure
+int8_t DS18B20_init(DS18B20 *devices, DS18B20_wire1_interface *wire1_fptrs, uint8_t max_devices)
+{
+	int8_t ret;
+
+	if(wire1_fptrs->delayUS 				== NULL
+	|| wire1_fptrs->setBus 					== NULL
+	|| wire1_fptrs->enableParasitePower 	== NULL
+	|| wire1_fptrs->read 					== NULL
+	|| &devices[0] 							== NULL)
+	{
+		return -DS18B20_NULL_VALUE;
+	}
+
+	devices[0].wire1 = wire1_fptrs;
+	devices[0].wire1_valid = 1;
+	devices[0].wire1->dev_cnt = 0;
+
+	ret = DS18B20_ScanAddressTree(devices, max_devices, DS18B20_CMD_SEARCH_ROM);
+	if(ret < 0)
+	{
+		return ret;
+	}
+	devices->wire1->dev_cnt = ret;	// Store number of devices enumerated in wire1 bus pointer
+
+	return ret;
+}
+
+// Scan wire1 interface for devices with alarm set
+int8_t DS18B20_searchAlarm(DS18B20 *devices, DS18B20_wire1_interface *wire1_fptrs, uint8_t max_devices)
+{
+	int8_t ret;
+
+	if(wire1_fptrs->delayUS 				== NULL
+	|| wire1_fptrs->setBus 					== NULL
+	|| wire1_fptrs->enableParasitePower 	== NULL
+	|| wire1_fptrs->read 					== NULL
+	|| &devices[0] 							== NULL)
+	{
+		return -DS18B20_NULL_VALUE;
+	}
+	devices[0].wire1 = wire1_fptrs;
+	devices[0].wire1_valid = 1;
+	devices[0].wire1->alarm_cnt = 0;
+
+	ret = DS18B20_ScanAddressTree(devices, max_devices, DS18B20_CMD_ALARM_SEARCH);
+	if(ret < 0)
+	{
+		return ret;
+	}
+	devices->wire1->alarm_cnt = ret;	// Store number of devices reported with alarm set in wire1 bus pointer
+
+	return ret;
 }
 
 /*

@@ -10,7 +10,7 @@ typedef enum
 {
 	DS18B20_OK = 0,			// No Error
 	DS18B20_NULL_VALUE,		// A Null value detected, bad function pointer?
-	DS18B20_INVALID_ACCESS,	// Invaild Bus or device access
+	DS18B20_INVALID_ACCESS,	// Invalid Bus or device access, bad command?
 	DS18B20_CRC_ERROR,		// Bad CRC check
 	DS18B20_DATA_ERROR,		// Bad Data check
 	DS18B20_BUS_IN_USE,		// Bus currently in use TODO: not valid as we wait_for_bus?
@@ -27,13 +27,16 @@ typedef enum
 	DS18B20_RESOLUTION_12BITS
 } DS18B20_RESOLUTION;
 
-// Structure to hold the required user implemented Board Specific function pointers
+// Structure to hold the required user implemented Board Specific wire1 function pointers,
+// And wire1 bus specific data
 typedef struct DS18B20_wire1_interface
 {
 	void (*delayUS)(uint32_t delay);	// Function pointer to function for delay with 1uS resolution
 	void (*setBus)(uint8_t value);		// Function pointer to function for setting wire1 bus to 0 (Low) or 1 (High)
 	void (*enableParasitePower)(uint8_t value); // Function pointer to function for setting 1wire power bypass 0 (Disabled) or 1 (Enabled
 	uint8_t (*read)();					// Function pointer to function to read current wire1 bus value
+	uint8_t dev_cnt;					// Variable to track number of valid devices enumerated on the bus
+	uint8_t alarm_cnt;					// Variable to track number of devices with alarm set
 	uint8_t in_use;						// Variable to track when wire1 bus is in use, (eg. Temperature conversion in progress)
 } DS18B20_wire1_interface;
 
@@ -60,22 +63,26 @@ typedef struct DS18B20
 //Each device is stored in passed devices pointer.
 int8_t DS18B20_init(DS18B20 *devices, DS18B20_wire1_interface *wire1_fptrs, uint8_t max_devices);
 
+int8_t DS18B20_searchAlarm(DS18B20 *devices, DS18B20_wire1_interface *wire1_fptrs, uint8_t max_devices);
 // Sends convert temperature command to specific device,
 //returns without waiting for conversion to complete and wire1 bus to free up so wire1->in_use is set
 int8_t DS18B20_convertTemperatureDevice(DS18B20 *device);
+
 // Sends convert temperature command to all devices on the bus using the SKIP_ROM command,
 //returns without waiting for conversion to complete and wire1 bus to free up so wire1->in_use is set
 int8_t DS18B20_convertTemperatureAll(DS18B20 *device);
+
 // Waits for wire1 Bus to become free by sending a read slot and waiting until 1 is returned
 int8_t DS18B20_waitForBus(DS18B20 *device);
 
 // Reads scratchpad and stores values in device data buffers
 int8_t DS18B20_getTemperature(DS18B20 *device);
-// Writes Values stored in device data buffers to the scratchpad
+
+// Writes Values stored in device data buffers th, tl, and resolution to the scratchpad
 int8_t DS18B20_writeScratchpad(DS18B20 *device);
 
 /* Device specific functions User MAY implement */
-//Calulates the DS18B20 CRC value, message is passed as MSb first and bits are flipped in this function
+//Calculates the DS18B20 CRC value, message is passed as MSb first and bits are flipped in this function
 uint8_t DS18B20_wire1_calcCRC_LSB(uint8_t *message, uint8_t byteLen);
 
 /* Functions exposed only during DEBUG */
